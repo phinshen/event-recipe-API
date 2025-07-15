@@ -29,8 +29,6 @@ app.get("/events/:uid", async (req, res) => {
   } catch (error) {
     console.error("Error fetching events:", error);
     res.status(500).json({ error: "Internal Server Error" });
-  } finally {
-    client.release();
   }
 });
 
@@ -48,8 +46,6 @@ app.post("/events", async (req, res) => {
   } catch (error) {
     console.error("Error creating event:", error);
     res.status(500).json({ error: "Internal Server Error" });
-  } finally {
-    client.release();
   }
 });
 
@@ -68,8 +64,6 @@ app.put("/events/:id", async (req, res) => {
   } catch (error) {
     console.error("Error updating event:", error);
     res.status(500).json({ error: "Internal Server Error" });
-  } finally {
-    client.release();
   }
 });
 
@@ -84,8 +78,6 @@ app.delete("/events/:id", async (req, res) => {
   } catch (error) {
     console.error("Error deleting event:", error);
     res.status(500).json({ error: "Internal Server Error" });
-  } finally {
-    client.release();
   }
 });
 
@@ -94,7 +86,4 @@ app.get("/", (req, res) => {
   res.send("Welcome to the API!");
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+export default app;
