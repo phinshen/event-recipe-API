@@ -89,12 +89,12 @@ app.get("/events", authenticateUser, async (req, res) => {
 
 //POST create event
 app.post("/events", authenticateUser, async (req, res) => {
-  const { title, date, description, location } = req.body;
+  const { name, date, description, location } = req.body;
 
   try {
     const result = await pool.query(
       "INSERT INTO events (user_id, title, date, description, location) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-      [req.userId, title, date, description, location]
+      [req.userId, name, date, description, location]
     );
     res.json(result.rows[0]);
     console.log("Events created successfully");
@@ -106,13 +106,13 @@ app.post("/events", authenticateUser, async (req, res) => {
 
 // PUT update event
 app.put("/events/:id", authenticateUser, async (req, res) => {
-  const { title, date, description, location } = req.body;
+  const { name, date, description, location } = req.body;
   const { id } = req.params;
 
   try {
     const result = await pool.query(
-      "UPDATE events SET name = $1, date = $2, description = $3, location = $4 WHERE id = $5 AND user_id = $6 RETURNING *",
-      [title, date, description, location, id, req.userId]
+      "UPDATE events SET title = $1, date = $2, description = $3, location = $4 WHERE id = $5 AND user_id = $6 RETURNING *",
+      [name, date, description, location, id, req.userId]
     );
     res.json(result.rows[0]);
     console.log("Event updated successfully");
