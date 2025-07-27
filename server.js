@@ -343,7 +343,7 @@ app.delete(
   }
 );
 
-// Helper function to get event with recipes
+// Helper function to get event with recipes - ADD THIS HERE
 async function getEventWithRecipes(eventId, userId) {
   try {
     const eventResult = await pool.query(
