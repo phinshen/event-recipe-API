@@ -4,7 +4,8 @@ import express from "express";
 import cors from "cors";
 import pg from "pg";
 import admin from "firebase-admin";
-import serviceAccount from "./firebaseServiceAccountKey.json" with { type: "json" };
+
+const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
 
 // Initialize Firebase Admin
 admin.initializeApp({
@@ -216,7 +217,12 @@ app.get("/", (req, res) => {
   res.send("Welcome to the API!");
 });
 
-// Start the Express server
-app.listen(3000, () => console.log("Server running on port 3000"));
+// ✅ Only run this locally!
+if (process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`Server running locally on port ${PORT}`);
+  });
+}
 
 export default app;
