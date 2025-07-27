@@ -41,49 +41,30 @@ async function authenticateUser(req, res, next) {
 // GET all events for the authenticated user
 app.get("/events", authenticateUser, async (req, res) => {
   try {
+    console.log("Fetching events for user:", req.userId);
+
     const eventResult = await pool.query(
       "SELECT * FROM events WHERE user_id = $1",
       [req.userId]
     );
 
-    const events = eventResult.rows;
+    console.log("Found events:", eventResult.rows);
 
-    // Fetch all recipes for user's events in a single query
-    const recipeResult = await pool.query(
-      `
-      SELECT er.event_id, r.*
-      FROM event_recipes er
-      JOIN recipes r ON er.recipe_id = r.id
-      WHERE er.user_id = $1
-    `,
-      [req.userId]
-    );
-
-    const recipeMap = {};
-    for (const row of recipeResult.rows) {
-      if (!recipeMap[row.event_id]) {
-        recipeMap[row.event_id] = [];
-      }
-      recipeMap[row.event_id].push({
-        idMeal: row.id,
-        strMeal: row.title,
-        strMealThumb: row.image || "",
-        strCategory: "Custom",
-        strArea: "N/A",
-      });
-    }
-
-    // Attach recipes (or empty array) to each event
-    const eventsWithRecipes = events.map((event) => ({
+    // Skip the recipe joining for now - just return events
+    const eventsWithRecipes = eventResult.rows.map((event) => ({
       ...event,
-      recipes: recipeMap[event.id] || [],
+      recipes: [], // Empty recipes array for now
     }));
 
     res.json(eventsWithRecipes);
-    console.log("Events (with recipes) fetched successfully");
+    console.log("Events fetched successfully");
   } catch (error) {
-    console.error("Error fetching events with recipes:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error(
+      "Detailed error fetching events:",
+      error.message,
+      error.stack
+    );
+    res.status(500).json({ error: error.message }); // Return actual error message
   }
 });
 
