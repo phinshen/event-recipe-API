@@ -4,7 +4,7 @@ import express from "express";
 import cors from "cors";
 import pg from "pg";
 import admin from "firebase-admin";
-import serviceAccount from "./firebaseServiceAccountKey.json" assert { type: "json" };
+import serviceAccount from "./firebaseServiceAccountKey.json" with { type: "json" };
 
 // Initialize Firebase Admin
 admin.initializeApp({
