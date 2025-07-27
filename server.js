@@ -93,7 +93,7 @@ app.post("/events", authenticateUser, async (req, res) => {
 
   try {
     const result = await pool.query(
-      "INSERT INTO events (user_id, name, date, description, location) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      "INSERT INTO events (user_id, title, date, description, location) VALUES ($1, $2, $3, $4, $5) RETURNING *",
       [req.userId, title, date, description, location]
     );
     res.json(result.rows[0]);
