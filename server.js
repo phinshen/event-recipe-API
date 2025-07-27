@@ -1,4 +1,3 @@
-// DEBUGGING VERSION - Add this to your server to see exact errors
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
@@ -27,63 +26,154 @@ const pool = new Pool({
 
 // middleware to authenticate Firebase user
 async function authenticateUser(req, res, next) {
+  const token = req.headers.authorization?.split("Bearer ")[1];
+  if (!token) return res.status(401).json({ error: "Missing token" });
+
   try {
-    const token = req.headers.authorization?.split("Bearer ")[1];
-    console.log("🔐 Token received:", token ? "Yes" : "No");
-
-    if (!token) {
-      console.log("❌ No token provided");
-      return res.status(401).json({ error: "Missing token" });
-    }
-
     const decoded = await admin.auth().verifyIdToken(token);
     req.userId = decoded.uid;
-    console.log("✅ User authenticated:", req.userId);
     next();
   } catch (err) {
-    console.error("❌ Auth error:", err.message);
     res.status(401).json({ error: "Invalid token" });
   }
 }
 
-// Add TheMealDB recipe to event - WITH DEBUGGING
-app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
-  const { id } = req.params;
-  const { recipe } = req.body;
-
-  console.log("🍳 Adding recipe to event:");
-  console.log("Event ID:", id);
-  console.log("User ID:", req.userId);
-  console.log("Recipe data:", recipe);
-
+// GET all events for the authenticated user WITH recipes
+app.get("/events", authenticateUser, async (req, res) => {
   try {
-    // Validate input data
-    if (!recipe) {
-      console.log("❌ No recipe data provided");
-      return res.status(400).json({ error: "Recipe data is required" });
-    }
+    console.log("Fetching events for user:", req.userId);
 
-    if (!recipe.idMeal || !recipe.strMeal) {
-      console.log("❌ Invalid recipe data:", recipe);
-      return res
-        .status(400)
-        .json({ error: "Recipe must have idMeal and strMeal" });
-    }
-
-    // Check if event exists and belongs to user
-    console.log("🔍 Checking if event exists...");
-    const eventCheck = await pool.query(
-      "SELECT id FROM events WHERE id = $1 AND user_id = $2",
-      [id, req.userId]
+    // Get events with their recipes in one query
+    const result = await pool.query(
+      `
+      SELECT 
+        e.id,
+        e.name,
+        e.date,
+        e.image_url,
+        e.user_id,
+        COALESCE(
+          json_agg(
+            CASE WHEN r.id IS NOT NULL THEN
+              json_build_object(
+                'id', r.id,
+                'idMeal', r.meal_id,
+                'strMeal', r.title,
+                'strMealThumb', r.image,
+                'strCategory', 'Unknown',
+                'strArea', 'Unknown'
+              )
+            END
+          ) FILTER (WHERE r.id IS NOT NULL), 
+          '[]'
+        ) as recipes
+      FROM events e
+      LEFT JOIN recipes r ON e.id = r.event_id
+      WHERE e.user_id = $1
+      GROUP BY e.id, e.name, e.date, e.image_url, e.user_id
+      ORDER BY e.date DESC
+    `,
+      [req.userId]
     );
 
-    if (eventCheck.rows.length === 0) {
-      console.log("❌ Event not found or doesn't belong to user");
-      return res.status(404).json({ error: "Event not found" });
-    }
+    // Format for frontend compatibility
+    const eventsWithRecipes = result.rows.map((event) => ({
+      id: event.id,
+      title: event.name, // Map name to title for frontend compatibility
+      name: event.name,
+      date: event.date,
+      image_url: event.image_url,
+      recipes: event.recipes || [],
+      created_at: event.date,
+    }));
 
-    console.log("✅ Event found, checking for duplicate recipe...");
+    res.json(eventsWithRecipes);
+    console.log("Events fetched successfully");
+  } catch (error) {
+    console.error("Error fetching events:", error.message, error.stack);
+    res.status(500).json({ error: error.message });
+  }
+});
 
+// POST create event
+app.post("/events", authenticateUser, async (req, res) => {
+  const { name, date, description, location } = req.body;
+
+  try {
+    const result = await pool.query(
+      "INSERT INTO events (user_id, name, date, image_url) VALUES ($1, $2, $3, $4) RETURNING *",
+      [req.userId, name, date, ""] // Using empty string for image_url
+    );
+
+    const newEvent = result.rows[0];
+
+    // Return in format expected by frontend
+    res.json({
+      id: newEvent.id,
+      title: newEvent.name,
+      name: newEvent.name,
+      date: newEvent.date,
+      image_url: newEvent.image_url,
+      recipes: [],
+      created_at: newEvent.date,
+    });
+    console.log("Event created successfully");
+  } catch (error) {
+    console.error("Error creating event:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// PUT update event
+app.put("/events/:id", authenticateUser, async (req, res) => {
+  const { name, date, description, location } = req.body;
+  const { id } = req.params;
+
+  try {
+    const result = await pool.query(
+      "UPDATE events SET name = $1, date = $2 WHERE id = $3 AND user_id = $4 RETURNING *",
+      [name, date, id, req.userId]
+    );
+
+    const updatedEvent = result.rows[0];
+    res.json({
+      id: updatedEvent.id,
+      title: updatedEvent.name,
+      name: updatedEvent.name,
+      date: updatedEvent.date,
+      image_url: updatedEvent.image_url,
+    });
+    console.log("Event updated successfully");
+  } catch (error) {
+    console.error("Error updating event:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// DELETE event
+app.delete("/events/:id", authenticateUser, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Recipes will be deleted automatically due to CASCADE
+    await pool.query("DELETE FROM events WHERE id = $1 AND user_id = $2", [
+      id,
+      req.userId,
+    ]);
+    res.json({ message: "Event deleted" });
+    console.log("Event deleted successfully");
+  } catch (error) {
+    console.error("Error deleting event:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+// Add TheMealDB recipe to event
+app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
+  const { id } = req.params;
+  const { recipe } = req.body; // Full recipe object from TheMealDB
+
+  try {
     // Check if recipe already exists for this event
     const existing = await pool.query(
       "SELECT id FROM recipes WHERE event_id = $1 AND meal_id = $2",
@@ -91,24 +181,18 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
     );
 
     if (existing.rows.length > 0) {
-      console.log("❌ Recipe already exists");
       return res
         .status(409)
         .json({ error: "Recipe already added to this event" });
     }
 
-    console.log("✅ No duplicate found, inserting recipe...");
-
     // Insert recipe
-    const insertResult = await pool.query(
-      "INSERT INTO recipes (event_id, meal_id, title, image) VALUES ($1, $2, $3, $4) RETURNING *",
-      [id, recipe.idMeal, recipe.strMeal, recipe.strMealThumb || ""]
+    await pool.query(
+      "INSERT INTO recipes (event_id, meal_id, title, image) VALUES ($1, $2, $3, $4)",
+      [id, recipe.idMeal, recipe.strMeal, recipe.strMealThumb]
     );
 
-    console.log("✅ Recipe inserted:", insertResult.rows[0]);
-
     // Return updated event with recipes
-    console.log("🔄 Fetching updated event data...");
     const result = await pool.query(
       `
       SELECT 
@@ -140,15 +224,8 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
       [id, req.userId]
     );
 
-    if (result.rows.length === 0) {
-      console.log("❌ Could not fetch updated event");
-      return res.status(500).json({ error: "Could not fetch updated event" });
-    }
-
     const updatedEvent = result.rows[0];
-    console.log("✅ Updated event data:", updatedEvent);
-
-    const responseData = {
+    res.json({
       id: updatedEvent.id,
       title: updatedEvent.name,
       name: updatedEvent.name,
@@ -156,62 +233,82 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
       image_url: updatedEvent.image_url,
       recipes: updatedEvent.recipes || [],
       created_at: updatedEvent.date,
-    };
-
-    console.log("✅ Sending response:", responseData);
-    res.json(responseData);
-  } catch (error) {
-    console.error("💥 Server error in add recipe:", error);
-    console.error("Error stack:", error.stack);
-    res.status(500).json({
-      error: "Internal Server Error",
-      details: error.message,
-      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
+
+    console.log("Recipe successfully added to event");
+  } catch (error) {
+    console.error("Error adding recipe to event:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-// Test the database connection
-app.get("/test-db", async (req, res) => {
-  try {
-    const result = await pool.query("SELECT NOW()");
-    res.json({
-      success: true,
-      time: result.rows[0].now,
-      message: "Database connection successful",
-    });
-  } catch (error) {
-    console.error("Database test failed:", error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+// Remove recipe from event
+app.delete(
+  "/events/:id/recipes/:mealId",
+  authenticateUser,
+  async (req, res) => {
+    const { id, mealId } = req.params;
+
+    try {
+      await pool.query(
+        "DELETE FROM recipes WHERE event_id = $1 AND meal_id = $2",
+        [id, mealId]
+      );
+
+      // Return updated event with recipes
+      const result = await pool.query(
+        `
+      SELECT 
+        e.id,
+        e.name,
+        e.date,
+        e.image_url,
+        e.user_id,
+        COALESCE(
+          json_agg(
+            CASE WHEN r.id IS NOT NULL THEN
+              json_build_object(
+                'id', r.id,
+                'idMeal', r.meal_id,
+                'strMeal', r.title,
+                'strMealThumb', r.image,
+                'strCategory', 'Unknown',
+                'strArea', 'Unknown'
+              )
+            END
+          ) FILTER (WHERE r.id IS NOT NULL), 
+          '[]'
+        ) as recipes
+      FROM events e
+      LEFT JOIN recipes r ON e.id = r.event_id
+      WHERE e.id = $1 AND e.user_id = $2
+      GROUP BY e.id, e.name, e.date, e.image_url, e.user_id
+    `,
+        [id, req.userId]
+      );
+
+      const updatedEvent = result.rows[0];
+      res.json({
+        id: updatedEvent.id,
+        title: updatedEvent.name,
+        name: updatedEvent.name,
+        date: updatedEvent.date,
+        image_url: updatedEvent.image_url,
+        recipes: updatedEvent.recipes || [],
+        created_at: updatedEvent.date,
+      });
+
+      console.log("Recipe successfully removed from event");
+    } catch (error) {
+      console.error("Error removing recipe from event:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
   }
-});
+);
 
 // Test route
 app.get("/", (req, res) => {
-  res.json({
-    message: "Welcome to the Event Recipe API!",
-    timestamp: new Date().toISOString(),
-    env: {
-      nodeEnv: process.env.NODE_ENV,
-      hasDbUrl: !!process.env.DATABASE_URL,
-      hasFirebaseConfig: !!process.env.FIREBASE_CONFIG,
-    },
-  });
-});
-
-// ... (rest of your existing routes)
-
-// Error handling middleware
-app.use((error, req, res, next) => {
-  console.error("💥 Unhandled error:", error);
-  res.status(500).json({
-    error: "Internal Server Error",
-    message: error.message,
-    stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
-  });
+  res.send("Welcome to the Event Recipe API!");
 });
 
 // Only run this locally!
