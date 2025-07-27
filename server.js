@@ -41,25 +41,60 @@ async function authenticateUser(req, res, next) {
 // GET all events for the authenticated user
 app.get("/events", authenticateUser, async (req, res) => {
   try {
-    const result = await pool.query("SELECT * FROM events WHERE user_id = $1", [
-      req.userId,
-    ]);
-    res.json(result.rows);
-    console.log("Events fetched successfully");
+    const eventResult = await pool.query(
+      "SELECT * FROM events WHERE user_id = $1",
+      [req.userId]
+    );
+
+    const events = eventResult.rows;
+
+    // Fetch all recipes for user's events in a single query
+    const recipeResult = await pool.query(
+      `
+      SELECT er.event_id, r.*
+      FROM event_recipes er
+      JOIN recipes r ON er.recipe_id = r.id
+      WHERE er.user_id = $1
+    `,
+      [req.userId]
+    );
+
+    const recipeMap = {};
+    for (const row of recipeResult.rows) {
+      if (!recipeMap[row.event_id]) {
+        recipeMap[row.event_id] = [];
+      }
+      recipeMap[row.event_id].push({
+        idMeal: row.id,
+        strMeal: row.title,
+        strMealThumb: row.image || "",
+        strCategory: "Custom",
+        strArea: "N/A",
+      });
+    }
+
+    // Attach recipes (or empty array) to each event
+    const eventsWithRecipes = events.map((event) => ({
+      ...event,
+      recipes: recipeMap[event.id] || [],
+    }));
+
+    res.json(eventsWithRecipes);
+    console.log("Events (with recipes) fetched successfully");
   } catch (error) {
-    console.error("Error fetching events:", error);
+    console.error("Error fetching events with recipes:", error);
     res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
 //POST create event
 app.post("/events", authenticateUser, async (req, res) => {
-  const { title, date } = req.body;
+  const { title, date, description, location } = req.body;
 
   try {
     const result = await pool.query(
-      "INSERT INTO events (user_id, title, date) VALUES ($1, $2, $3) RETURNING *",
-      [req.userId, title, date]
+      "INSERT INTO events (user_id, name, date, description, location) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [req.userId, title, date, description, location]
     );
     res.json(result.rows[0]);
     console.log("Events created successfully");
@@ -71,13 +106,13 @@ app.post("/events", authenticateUser, async (req, res) => {
 
 // PUT update event
 app.put("/events/:id", authenticateUser, async (req, res) => {
-  const { title, date } = req.body;
+  const { title, date, description, location } = req.body;
   const { id } = req.params;
 
   try {
     const result = await pool.query(
-      "UPDATE events SET title = $1, date = $2 WHERE id = $3 AND user_id = $4 RETURNING *",
-      [title, date, id, req.userId]
+      "UPDATE events SET name = $1, date = $2, description = $3, location = $4 WHERE id = $5 AND user_id = $6 RETURNING *",
+      [title, date, description, location, id, req.userId]
     );
     res.json(result.rows[0]);
     console.log("Event updated successfully");
