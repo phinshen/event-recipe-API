@@ -63,7 +63,8 @@ app.get("/events", authenticateUser, async (req, res) => {
       const recipesResult = await pool.query(
         `SELECT event_id, id, meal_id, title, image, ingredients, instructions, custom
          FROM recipes 
-         WHERE event_id = ANY($1::int[])`,
+         WHERE event_id = ANY($1::int[])
+         ORDER BY id DESC`,
         [eventIds]
       );
       recipes = recipesResult.rows;
@@ -81,8 +82,8 @@ app.get("/events", authenticateUser, async (req, res) => {
         strMealThumb: recipe.image,
         strCategory: "Unknown",
         strArea: "Unknown",
-        ingredients: recipe.ingredients,
-        instructions: recipe.instructions,
+        strIngredients: recipe.ingredients,
+        strInstructions: recipe.instructions,
         custom: recipe.custom,
       });
       return acc;
@@ -225,6 +226,12 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
   const { recipe } = req.body;
 
   try {
+    console.log("Adding recipe to event:", {
+      eventId: id,
+      recipeId: recipe.idMeal,
+      recipeName: recipe.strMeal,
+    });
+
     // Verify event belongs to user
     const eventCheck = await pool.query(
       "SELECT id FROM events WHERE id = $1 AND user_id = $2",
@@ -249,20 +256,36 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         .json({ error: "Recipe already added to this event" });
     }
 
-    // Insert recipe with all available fields
-    await pool.query(
+    // Extract and format ingredients from TheMealDB format
+    const ingredients = [];
+    for (let i = 1; i <= 20; i++) {
+      const ingredient = recipe[`strIngredient${i}`];
+      const measure = recipe[`strMeasure${i}`];
+      if (ingredient && ingredient.trim()) {
+        ingredients.push(
+          `${measure ? measure.trim() + " " : ""}${ingredient.trim()}`
+        );
+      }
+    }
+    const ingredientsText = ingredients.join(", ");
+
+    // Insert recipe with properly formatted data
+    const insertResult = await pool.query(
       `INSERT INTO recipes (event_id, meal_id, title, image, ingredients, instructions, custom) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7) 
+       RETURNING *`,
       [
         id,
         recipe.idMeal,
         recipe.strMeal,
-        recipe.strMealThumb,
-        recipe.strInstructions || "", // Store instructions if available
-        recipe.strIngredients || "", // Store ingredients if available
+        recipe.strMealThumb || "",
+        ingredientsText, // Formatted ingredients
+        recipe.strInstructions || "", // Instructions from TheMealDB
         false, // This is from TheMealDB, not custom
       ]
     );
+
+    console.log("Recipe inserted successfully:", insertResult.rows[0]);
 
     // Get updated event with recipes
     const updatedEvent = await getEventWithRecipes(id, req.userId);
@@ -270,7 +293,13 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
 
     console.log("Recipe successfully added to event");
   } catch (error) {
-    console.error("Error adding recipe to event:", error);
+    console.error("Error adding recipe to event:", {
+      message: error.message,
+      stack: error.stack,
+      code: error.code,
+      detail: error.detail,
+    });
+
     res.status(500).json({
       error: "Failed to add recipe",
       details:
@@ -316,49 +345,55 @@ app.delete(
 
 // Helper function to get event with recipes
 async function getEventWithRecipes(eventId, userId) {
-  const eventResult = await pool.query(
-    `SELECT id, name, date, image_url, description, location, created_at
-     FROM events 
-     WHERE id = $1 AND user_id = $2`,
-    [eventId, userId]
-  );
+  try {
+    const eventResult = await pool.query(
+      `SELECT id, name, date, image_url, description, location, created_at
+       FROM events 
+       WHERE id = $1 AND user_id = $2`,
+      [eventId, userId]
+    );
 
-  if (eventResult.rows.length === 0) {
-    throw new Error("Event not found");
+    if (eventResult.rows.length === 0) {
+      throw new Error("Event not found");
+    }
+
+    const event = eventResult.rows[0];
+
+    const recipesResult = await pool.query(
+      `SELECT id, meal_id, title, image, ingredients, instructions, custom
+       FROM recipes 
+       WHERE event_id = $1 
+       ORDER BY id DESC`,
+      [eventId]
+    );
+
+    const recipes = recipesResult.rows.map((recipe) => ({
+      id: recipe.id,
+      idMeal: recipe.meal_id,
+      strMeal: recipe.title,
+      strMealThumb: recipe.image,
+      strCategory: "Unknown",
+      strArea: "Unknown",
+      strIngredients: recipe.ingredients, // Added ingredients
+      strInstructions: recipe.instructions, // Added instructions
+      custom: recipe.custom,
+    }));
+
+    return {
+      id: event.id,
+      title: event.name,
+      name: event.name,
+      date: event.date,
+      description: event.description || "",
+      location: event.location || "",
+      image_url: event.image_url || "",
+      recipes: recipes,
+      created_at: event.created_at,
+    };
+  } catch (error) {
+    console.error("Error in getEventWithRecipes:", error);
+    throw error;
   }
-
-  const event = eventResult.rows[0];
-
-  const recipesResult = await pool.query(
-    `SELECT id, meal_id, title, image, ingredients, instructions, custom
-     FROM recipes 
-     WHERE event_id = $1`,
-    [eventId]
-  );
-
-  const recipes = recipesResult.rows.map((recipe) => ({
-    id: recipe.id,
-    idMeal: recipe.meal_id,
-    strMeal: recipe.title,
-    strMealThumb: recipe.image,
-    strCategory: "Unknown",
-    strArea: "Unknown",
-    ingredients: recipe.ingredients,
-    instructions: recipe.instructions,
-    custom: recipe.custom,
-  }));
-
-  return {
-    id: event.id,
-    title: event.name,
-    name: event.name,
-    date: event.date,
-    description: event.description || "",
-    location: event.location || "",
-    image_url: event.image_url || "",
-    recipes: recipes,
-    created_at: event.created_at,
-  };
 }
 
 // Test route
