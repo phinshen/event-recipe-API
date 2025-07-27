@@ -279,11 +279,12 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
 
     // Insert recipe with properly formatted data
     const insertResult = await pool.query(
-      `INSERT INTO recipes (event_id, meal_id, title, image, ingredients, instructions, custom) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7) 
-       RETURNING *`,
+      `INSERT INTO recipes (event_id, user_id, meal_id, title, image, ingredients, instructions, custom) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+   RETURNING *`,
       [
         id,
+        req.userId,
         recipe.idMeal,
         recipe.strMeal,
         recipe.strMealThumb || "",
@@ -341,13 +342,12 @@ app.delete(
     const { id, mealId } = req.params;
 
     try {
-      // Verify event belongs to user and delete recipe
+      // Updated to include user_id in the deletion for security
       const result = await pool.query(
         `DELETE FROM recipes 
-       WHERE event_id = $1 AND meal_id = $2 
-       AND event_id IN (SELECT id FROM events WHERE user_id = $3)
+       WHERE event_id = $1 AND meal_id = $2 AND user_id = $3
        RETURNING id`,
-        [id, mealId, req.userId]
+        [id, mealId, req.userId] // Added req.userId
       );
 
       if (result.rows.length === 0) {
@@ -384,12 +384,13 @@ async function getEventWithRecipes(eventId, userId) {
 
     const event = eventResult.rows[0];
 
+    // Updated to include user_id filter for extra security
     const recipesResult = await pool.query(
       `SELECT id, meal_id, title, image, ingredients, instructions, custom
        FROM recipes 
-       WHERE event_id = $1 
+       WHERE event_id = $1 AND user_id = $2
        ORDER BY id DESC`,
-      [eventId]
+      [eventId, userId] // Added userId parameter
     );
 
     const recipes = recipesResult.rows.map((recipe) => ({
@@ -399,8 +400,8 @@ async function getEventWithRecipes(eventId, userId) {
       strMealThumb: recipe.image,
       strCategory: "Unknown",
       strArea: "Unknown",
-      strIngredients: recipe.ingredients, // Added ingredients
-      strInstructions: recipe.instructions, // Added instructions
+      strIngredients: recipe.ingredients,
+      strInstructions: recipe.instructions,
       custom: recipe.custom,
     }));
 
