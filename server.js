@@ -1,3 +1,4 @@
+// DEBUGGING VERSION - Add this to your server to see exact errors
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
