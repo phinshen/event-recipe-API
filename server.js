@@ -255,10 +255,16 @@ app.get("/events", authenticateUser, async (req, res) => {
 
 // POST create event
 app.post("/events", authenticateUser, async (req, res) => {
-  const { name, date, description, location } = req.body;
+  const { name, date, description, location, image_url } = req.body;
 
   try {
-    console.log("Creating event:", { name, date, description, location });
+    console.log("Creating event:", {
+      name,
+      date,
+      description,
+      location,
+      image_url,
+    });
 
     if (!name || !date) {
       return res.status(400).json({ error: "Name and date are required" });
@@ -268,7 +274,14 @@ app.post("/events", authenticateUser, async (req, res) => {
       `INSERT INTO events (user_id, name, date, description, location, image_url, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
        RETURNING *`,
-      [req.userId, name, date, description || "", location || "", ""]
+      [
+        req.userId,
+        name,
+        date,
+        description || "",
+        location || "",
+        image_url || "",
+      ]
     );
 
     const newEvent = result.rows[0];
@@ -298,16 +311,24 @@ app.post("/events", authenticateUser, async (req, res) => {
 
 // PUT update event
 app.put("/events/:id", authenticateUser, async (req, res) => {
-  const { name, date, description, location } = req.body;
+  const { name, date, description, location, image_url } = req.body;
   const { id } = req.params;
 
   try {
     const result = await pool.query(
       `UPDATE events 
-       SET name = $1, date = $2, description = $3, location = $4
-       WHERE id = $5 AND user_id = $6 
+       SET name = $1, date = $2, description = $3, location = $4, image_url = $5
+       WHERE id = $6 AND user_id = $7 
        RETURNING *`,
-      [name, date, description || "", location || "", id, req.userId]
+      [
+        name,
+        date,
+        description || "",
+        location || "",
+        image_url || "",
+        id,
+        req.userId,
+      ]
     );
 
     if (result.rows.length === 0) {
