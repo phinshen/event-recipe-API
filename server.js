@@ -14,22 +14,18 @@ admin.initializeApp({
 
 const app = express();
 
-// IMPROVED CORS Configuration
+// CORS Configuration
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or Postman)
     if (!origin) return callback(null, true);
 
-    // Define allowed origins
     const allowedOrigins = [
       "http://localhost:3000",
-      "http://localhost:5173", // Vite dev server
-      "http://localhost:4173", // Vite preview
-      "https://your-frontend-domain.vercel.app", // Replace with your actual frontend domain
-      // Add more origins as needed
+      "http://localhost:5173",
+      "http://localhost:4173",
+      "https://your-frontend-domain.vercel.app",
     ];
 
-    // Allow any localhost origin during development
     if (
       origin.startsWith("http://localhost:") ||
       allowedOrigins.includes(origin)
@@ -39,7 +35,7 @@ const corsOptions = {
 
     callback(new Error("Not allowed by CORS"));
   },
-  credentials: true, // Allow cookies and credentials
+  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: [
     "Origin",
@@ -51,7 +47,7 @@ const corsOptions = {
     "Pragma",
   ],
   preflightContinue: false,
-  optionsSuccessStatus: 200, // Some legacy browsers (IE11, various SmartTVs) choke on 204
+  optionsSuccessStatus: 200,
 };
 
 app.use(cors(corsOptions));
@@ -80,7 +76,104 @@ async function authenticateUser(req, res, next) {
   }
 }
 
-// Helper function to get event with recipes - SINGLE DEFINITION
+// FIXED: Safe helper function to reconstruct recipe data
+function reconstructRecipeData(recipe) {
+  try {
+    // Start with basic recipe structure
+    let completeRecipe = {
+      id: recipe.id,
+      idMeal: recipe.meal_id,
+      strMeal: recipe.title,
+      strMealThumb: recipe.image,
+      strCategory: recipe.category || "Unknown",
+      strArea: recipe.area || "Unknown",
+      strTags: recipe.tags || "",
+      strYoutube: recipe.youtube_url || "",
+      strSource: recipe.source_url || "",
+      strInstructions: recipe.instructions || "",
+      strIngredients: recipe.ingredients,
+      custom: recipe.custom,
+    };
+
+    // Safely try to parse and merge recipe_data
+    if (recipe.recipe_data) {
+      try {
+        let storedData;
+
+        // Handle both string and object cases
+        if (typeof recipe.recipe_data === "string") {
+          storedData = JSON.parse(recipe.recipe_data);
+        } else {
+          storedData = recipe.recipe_data;
+        }
+
+        // Only override with stored data if it exists and is not "Unknown"
+        if (storedData.strCategory && storedData.strCategory !== "Unknown") {
+          completeRecipe.strCategory = storedData.strCategory;
+        }
+        if (storedData.strArea && storedData.strArea !== "Unknown") {
+          completeRecipe.strArea = storedData.strArea;
+        }
+        if (storedData.strTags) {
+          completeRecipe.strTags = storedData.strTags;
+        }
+        if (storedData.strYoutube) {
+          completeRecipe.strYoutube = storedData.strYoutube;
+        }
+        if (storedData.strSource) {
+          completeRecipe.strSource = storedData.strSource;
+        }
+        if (storedData.strInstructions) {
+          completeRecipe.strInstructions = storedData.strInstructions;
+        }
+
+        // Add individual ingredient/measure properties
+        Object.keys(storedData)
+          .filter(
+            (key) =>
+              key.startsWith("strIngredient") || key.startsWith("strMeasure")
+          )
+          .forEach((key) => {
+            if (storedData[key]) {
+              completeRecipe[key] = storedData[key];
+            }
+          });
+      } catch (parseError) {
+        // If JSON parsing fails, just use the basic structure
+        console.warn(
+          "Failed to parse recipe_data for recipe:",
+          recipe.id,
+          parseError.message
+        );
+      }
+    }
+
+    return completeRecipe;
+  } catch (error) {
+    console.error(
+      "Error reconstructing recipe data for recipe:",
+      recipe.id,
+      error
+    );
+    // Return minimal safe structure if everything fails
+    return {
+      id: recipe.id,
+      idMeal: recipe.meal_id,
+      strMeal: recipe.title,
+      strMealThumb: recipe.image,
+      strCategory: "Unknown",
+      strArea: "Unknown",
+      strTags: "",
+      strYoutube: "",
+      strSource: "",
+      strInstructions: recipe.instructions || "",
+      strIngredients: recipe.ingredients || "",
+      custom: recipe.custom || false,
+    };
+  }
+}
+
+// Helper function to get event with recipes
 async function getEventWithRecipes(eventId, userId) {
   try {
     const eventResult = await pool.query(
@@ -105,40 +198,10 @@ async function getEventWithRecipes(eventId, userId) {
       [eventId, userId]
     );
 
-    const recipes = recipesResult.rows.map((recipe) => {
-      // Use the stored recipe_data (JSONB) to reconstruct the full recipe object
-      const storedData = recipe.recipe_data || {};
-
-      // Create a complete recipe object that matches TheMealDB format
-      const completeRecipe = {
-        id: recipe.id,
-        idMeal: recipe.meal_id,
-        strMeal: recipe.title,
-        strMealThumb: recipe.image,
-        strCategory: storedData.strCategory || recipe.category || "Unknown",
-        strArea: storedData.strArea || recipe.area || "Unknown",
-        strTags: storedData.strTags || recipe.tags || "",
-        strYoutube: storedData.strYoutube || recipe.youtube_url || "",
-        strSource: storedData.strSource || recipe.source_url || "",
-        strInstructions:
-          recipe.instructions || storedData.strInstructions || "",
-        custom: recipe.custom,
-        // Include all the individual ingredient/measure properties from stored data
-        ...Object.keys(storedData)
-          .filter(
-            (key) =>
-              key.startsWith("strIngredient") || key.startsWith("strMeasure")
-          )
-          .reduce((acc, key) => {
-            acc[key] = storedData[key];
-            return acc;
-          }, {}),
-        // Also include the concatenated ingredients for backward compatibility
-        strIngredients: recipe.ingredients,
-      };
-
-      return completeRecipe;
-    });
+    // Safely reconstruct recipe data
+    const recipes = recipesResult.rows.map((recipe) =>
+      reconstructRecipeData(recipe)
+    );
 
     return {
       id: event.id,
@@ -188,48 +251,23 @@ app.get("/events", authenticateUser, async (req, res) => {
       recipes = recipesResult.rows;
     }
 
-    // Group recipes by event_id
+    // Group recipes by event_id using safe reconstruction
     const recipesByEvent = recipes.reduce((acc, recipe) => {
       if (!acc[recipe.event_id]) {
         acc[recipe.event_id] = [];
       }
 
-      // Use the stored recipe_data to reconstruct the complete recipe
-      const storedData = JSON.parse(recipe.recipe_data || "{}");
+      // Use the safe helper function
+      const reconstructedRecipe = reconstructRecipeData(recipe);
+      acc[recipe.event_id].push(reconstructedRecipe);
 
-      acc[recipe.event_id].push({
-        id: recipe.id,
-        idMeal: recipe.meal_id,
-        strMeal: recipe.title,
-        strMealThumb: recipe.image,
-        strCategory: storedData.strCategory || recipe.category || "Unknown",
-        strArea: storedData.strArea || recipe.area || "Unknown",
-        strTags: storedData.strTags || recipe.tags || "",
-        strYoutube: storedData.strYoutube || recipe.youtube_url || "",
-        strSource: storedData.strSource || recipe.source_url || "",
-        strInstructions:
-          recipe.instructions || storedData.strInstructions || "",
-        custom: recipe.custom,
-        // Include all the individual ingredient/measure properties
-        ...Object.keys(storedData)
-          .filter(
-            (key) =>
-              key.startsWith("strIngredient") || key.startsWith("strMeasure")
-          )
-          .reduce((acc, key) => {
-            acc[key] = storedData[key];
-            return acc;
-          }, {}),
-        // Keep concatenated ingredients for backward compatibility
-        strIngredients: recipe.ingredients,
-      });
       return acc;
     }, {});
 
     // Combine events with their recipes
     const eventsWithRecipes = eventsResult.rows.map((event) => ({
       id: event.id,
-      title: event.name, // Map name to title for frontend compatibility
+      title: event.name,
       name: event.name,
       date: event.date,
       description: event.description || "",
@@ -273,7 +311,6 @@ app.post("/events", authenticateUser, async (req, res) => {
 
     const newEvent = result.rows[0];
 
-    // Return in format expected by frontend
     res.status(201).json({
       id: newEvent.id,
       title: newEvent.name,
@@ -398,7 +435,7 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         .json({ error: "Recipe already added to this event" });
     }
 
-    // Extract ingredients into readable format (keep this for backward compatibility)
+    // Extract ingredients into readable format
     const ingredients = [];
     for (let i = 1; i <= 20; i++) {
       const ingredient = recipe[`strIngredient${i}`];
@@ -428,7 +465,7 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         recipe.strTags || null,
         recipe.strYoutube || null,
         recipe.strSource || null,
-        JSON.stringify(recipe), // Convert recipe object to JSON string for JSONB storage
+        JSON.stringify(recipe),
       ]
     );
 
