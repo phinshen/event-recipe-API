@@ -13,7 +13,47 @@ admin.initializeApp({
 });
 
 const app = express();
-app.use(cors());
+
+// FIXED CORS Configuration
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+
+      // Define allowed origins
+      const allowedOrigins = [
+        "http://localhost:3000",
+        "http://localhost:5173", // Your Vite dev server
+        "http://localhost:4173", // Vite preview
+        "https://your-frontend-domain.vercel.app", // Replace with your actual frontend domain when deployed
+      ];
+
+      // Allow any localhost origin during development
+      if (
+        origin.startsWith("http://localhost:") ||
+        allowedOrigins.includes(origin)
+      ) {
+        return callback(null, true);
+      }
+
+      // For production, you might want to be more strict
+      callback(null, true); // Allow all for now - change this for production
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "Cache-Control",
+      "Pragma",
+    ],
+  })
+);
+
 app.use(express.json());
 
 const { Pool } = pg;
@@ -36,6 +76,78 @@ async function authenticateUser(req, res, next) {
   } catch (err) {
     console.error("Authentication error:", err);
     res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// Helper function to get event with recipes
+async function getEventWithRecipes(eventId, userId) {
+  try {
+    const eventResult = await pool.query(
+      `SELECT id, name, date, image_url, description, location, created_at
+       FROM events 
+       WHERE id = $1 AND user_id = $2`,
+      [eventId, userId]
+    );
+
+    if (eventResult.rows.length === 0) {
+      throw new Error("Event not found");
+    }
+
+    const event = eventResult.rows[0];
+
+    const recipesResult = await pool.query(
+      `SELECT id, meal_id, title, image, ingredients, instructions, custom, category, area, tags, youtube_url, source_url, recipe_data
+       FROM recipes 
+       WHERE event_id = $1 AND user_id = $2
+       ORDER BY id DESC`,
+      [eventId, userId]
+    );
+
+    const recipes = recipesResult.rows.map((recipe) => {
+      // Simple recipe reconstruction - no complex parsing
+      const storedData = recipe.recipe_data || {};
+
+      return {
+        id: recipe.id,
+        idMeal: recipe.meal_id,
+        strMeal: recipe.title,
+        strMealThumb: recipe.image,
+        strCategory: storedData.strCategory || recipe.category || "Unknown",
+        strArea: storedData.strArea || recipe.area || "Unknown",
+        strTags: storedData.strTags || recipe.tags || "",
+        strYoutube: storedData.strYoutube || recipe.youtube_url || "",
+        strSource: storedData.strSource || recipe.source_url || "",
+        strInstructions:
+          recipe.instructions || storedData.strInstructions || "",
+        custom: recipe.custom,
+        // Include individual ingredient/measure properties if they exist
+        ...Object.keys(storedData)
+          .filter(
+            (key) =>
+              key.startsWith("strIngredient") || key.startsWith("strMeasure")
+          )
+          .reduce((acc, key) => {
+            acc[key] = storedData[key];
+            return acc;
+          }, {}),
+        strIngredients: recipe.ingredients,
+      };
+    });
+
+    return {
+      id: event.id,
+      title: event.name,
+      name: event.name,
+      date: event.date,
+      description: event.description || "",
+      location: event.location || "",
+      image_url: event.image_url || "",
+      recipes: recipes,
+      created_at: event.created_at,
+    };
+  } catch (error) {
+    console.error("Error in getEventWithRecipes:", error);
+    throw error;
   }
 }
 
@@ -76,8 +188,8 @@ app.get("/events", authenticateUser, async (req, res) => {
         acc[recipe.event_id] = [];
       }
 
-      // Use the stored recipe_data to reconstruct the complete recipe
-      const storedData = JSON.parse(recipe.recipe_data || "{}");
+      // Simple recipe data handling
+      const storedData = recipe.recipe_data || {};
 
       acc[recipe.event_id].push({
         id: recipe.id,
@@ -92,7 +204,7 @@ app.get("/events", authenticateUser, async (req, res) => {
         strInstructions:
           recipe.instructions || storedData.strInstructions || "",
         custom: recipe.custom,
-        // Include all the individual ingredient/measure properties
+        // Include individual ingredient/measure properties if they exist
         ...Object.keys(storedData)
           .filter(
             (key) =>
@@ -102,7 +214,6 @@ app.get("/events", authenticateUser, async (req, res) => {
             acc[key] = storedData[key];
             return acc;
           }, {}),
-        // Keep concatenated ingredients for backward compatibility
         strIngredients: recipe.ingredients,
       });
       return acc;
@@ -111,7 +222,7 @@ app.get("/events", authenticateUser, async (req, res) => {
     // Combine events with their recipes
     const eventsWithRecipes = eventsResult.rows.map((event) => ({
       id: event.id,
-      title: event.name, // Map name to title for frontend compatibility
+      title: event.name,
       name: event.name,
       date: event.date,
       description: event.description || "",
@@ -135,7 +246,7 @@ app.get("/events", authenticateUser, async (req, res) => {
   }
 });
 
-// POST create event
+// POST create event - WITH image_url support
 app.post("/events", authenticateUser, async (req, res) => {
   const { name, date, description, location, image_url } = req.body;
 
@@ -168,7 +279,6 @@ app.post("/events", authenticateUser, async (req, res) => {
 
     const newEvent = result.rows[0];
 
-    // Return in format expected by frontend
     res.status(201).json({
       id: newEvent.id,
       title: newEvent.name,
@@ -191,7 +301,7 @@ app.post("/events", authenticateUser, async (req, res) => {
   }
 });
 
-// PUT update event
+// PUT update event - WITH image_url support
 app.put("/events/:id", authenticateUser, async (req, res) => {
   const { name, date, description, location, image_url } = req.body;
   const { id } = req.params;
@@ -199,8 +309,8 @@ app.put("/events/:id", authenticateUser, async (req, res) => {
   try {
     const result = await pool.query(
       `UPDATE events 
-       SET name = $1, date = $2, description = $3, location = $4
-       WHERE id = $5 AND user_id = $6 
+       SET name = $1, date = $2, description = $3, location = $4, image_url = $5
+       WHERE id = $6 AND user_id = $7 
        RETURNING *`,
       [
         name,
@@ -301,7 +411,7 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         .json({ error: "Recipe already added to this event" });
     }
 
-    // Extract ingredients into readable format (keep this for backward compatibility)
+    // Extract ingredients into readable format
     const ingredients = [];
     for (let i = 1; i <= 20; i++) {
       const ingredient = recipe[`strIngredient${i}`];
@@ -331,7 +441,7 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         recipe.strTags || null,
         recipe.strYoutube || null,
         recipe.strSource || null,
-        recipe, // save entire object as JSONB - THIS IS KEY!
+        JSON.stringify(recipe),
       ]
     );
 
@@ -346,142 +456,55 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
   }
 });
 
-// helper function:
-async function getEventWithRecipes(eventId, userId) {
-  try {
-    const eventResult = await pool.query(
-      `SELECT id, name, date, image_url, description, location, created_at
-       FROM events 
-       WHERE id = $1 AND user_id = $2`,
-      [eventId, userId]
-    );
+// DELETE recipe from event
+app.delete(
+  "/events/:eventId/recipes/:recipeId",
+  authenticateUser,
+  async (req, res) => {
+    const { eventId, recipeId } = req.params;
 
-    if (eventResult.rows.length === 0) {
-      throw new Error("Event not found");
+    try {
+      console.log("Removing recipe from event:", {
+        eventId,
+        recipeId,
+        userId: req.userId,
+      });
+
+      // Check if event belongs to user
+      const eventCheck = await pool.query(
+        "SELECT id FROM events WHERE id = $1 AND user_id = $2",
+        [eventId, req.userId]
+      );
+
+      if (eventCheck.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Event not found or access denied" });
+      }
+
+      // Delete the recipe
+      const result = await pool.query(
+        "DELETE FROM recipes WHERE event_id = $1 AND meal_id = $2 AND user_id = $3 RETURNING id",
+        [eventId, recipeId, req.userId]
+      );
+
+      if (result.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Recipe not found or access denied" });
+      }
+
+      console.log("Recipe removed successfully");
+
+      // Return updated event with remaining recipes
+      const updatedEvent = await getEventWithRecipes(eventId, req.userId);
+      res.json(updatedEvent);
+    } catch (error) {
+      console.error("Error removing recipe:", error);
+      res.status(500).json({ error: "Failed to remove recipe from event" });
     }
-
-    const event = eventResult.rows[0];
-
-    // Updated to include recipe_data
-    const recipesResult = await pool.query(
-      `SELECT id, meal_id, title, image, ingredients, instructions, custom, category, area, tags, youtube_url, source_url, recipe_data
-       FROM recipes 
-       WHERE event_id = $1 AND user_id = $2
-       ORDER BY id DESC`,
-      [eventId, userId]
-    );
-
-    const recipes = recipesResult.rows.map((recipe) => {
-      // Use the stored recipe_data (JSONB) to reconstruct the full recipe object
-      const storedData = recipe.recipe_data || {};
-
-      // Create a complete recipe object that matches TheMealDB format
-      const completeRecipe = {
-        id: recipe.id,
-        idMeal: recipe.meal_id,
-        strMeal: recipe.title,
-        strMealThumb: recipe.image,
-        strCategory: storedData.strCategory || recipe.category || "Unknown",
-        strArea: storedData.strArea || recipe.area || "Unknown",
-        strTags: storedData.strTags || recipe.tags || "",
-        strYoutube: storedData.strYoutube || recipe.youtube_url || "",
-        strSource: storedData.strSource || recipe.source_url || "",
-        strInstructions:
-          recipe.instructions || storedData.strInstructions || "",
-        custom: recipe.custom,
-        // Include all the individual ingredient/measure properties from stored data
-        ...Object.keys(storedData)
-          .filter(
-            (key) =>
-              key.startsWith("strIngredient") || key.startsWith("strMeasure")
-          )
-          .reduce((acc, key) => {
-            acc[key] = storedData[key];
-            return acc;
-          }, {}),
-        // Also include the concatenated ingredients for backward compatibility
-        strIngredients: recipe.ingredients,
-      };
-
-      return completeRecipe;
-    });
-
-    return {
-      id: event.id,
-      title: event.name,
-      name: event.name,
-      date: event.date,
-      description: event.description || "",
-      location: event.location || "",
-      image_url: event.image_url || "",
-      recipes: recipes,
-      created_at: event.created_at,
-    };
-  } catch (error) {
-    console.error("Error in getEventWithRecipes:", error);
-    throw error;
   }
-}
-
-// Helper function to get event with recipes - ADD THIS HERE
-async function getEventWithRecipes(eventId, userId) {
-  try {
-    const eventResult = await pool.query(
-      `SELECT id, name, date, image_url, description, location, created_at
-       FROM events 
-       WHERE id = $1 AND user_id = $2`,
-      [eventId, userId]
-    );
-
-    if (eventResult.rows.length === 0) {
-      throw new Error("Event not found");
-    }
-
-    const event = eventResult.rows[0];
-
-    // Updated to include user_id filter for extra security
-    const recipesResult = await pool.query(
-      `SELECT id, meal_id, title, image, ingredients, instructions, custom
-       FROM recipes 
-       WHERE event_id = $1 AND user_id = $2
-       ORDER BY id DESC`,
-      [eventId, userId] // Added userId parameter
-    );
-
-    const recipes = recipesResult.rows.map((recipe) => {
-      const full = recipe.recipe_data || {};
-      return {
-        id: recipe.id,
-        idMeal: recipe.meal_id,
-        strMeal: recipe.title,
-        strMealThumb: recipe.image,
-        strCategory: recipe.category || full.strCategory || "Unknown",
-        strArea: recipe.area || full.strArea || "Unknown",
-        strTags: recipe.tags || full.strTags || "",
-        strYoutube: recipe.youtube_url || full.strYoutube || "",
-        strSource: recipe.source_url || full.strSource || "",
-        strIngredients: recipe.ingredients,
-        strInstructions: recipe.instructions,
-        custom: recipe.custom,
-      };
-    });
-
-    return {
-      id: event.id,
-      title: event.name,
-      name: event.name,
-      date: event.date,
-      description: event.description || "",
-      location: event.location || "",
-      image_url: event.image_url || "",
-      recipes: recipes,
-      created_at: event.created_at,
-    };
-  } catch (error) {
-    console.error("Error in getEventWithRecipes:", error);
-    throw error;
-  }
-}
+);
 
 // Test route
 app.get("/", (req, res) => {
