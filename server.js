@@ -24,32 +24,14 @@ const pool = new Pool({
   },
 });
 
-// Middleware to authenticate Firebase user and ensure user exists in database
+// middleware to authenticate Firebase user
 async function authenticateUser(req, res, next) {
   const token = req.headers.authorization?.split("Bearer ")[1];
   if (!token) return res.status(401).json({ error: "Missing token" });
 
   try {
     const decoded = await admin.auth().verifyIdToken(token);
-    req.firebaseUid = decoded.uid;
-
-    // Ensure user exists in database
-    const userResult = await pool.query(
-      "SELECT id, firebase_uid FROM users WHERE firebase_uid = $1",
-      [decoded.uid]
-    );
-
-    if (userResult.rows.length === 0) {
-      // Create user if doesn't exist
-      const newUserResult = await pool.query(
-        "INSERT INTO users (firebase_uid) VALUES ($1) RETURNING id, firebase_uid",
-        [decoded.uid]
-      );
-      req.userId = newUserResult.rows[0].id;
-    } else {
-      req.userId = userResult.rows[0].id;
-    }
-
+    req.userId = decoded.uid;
     next();
   } catch (err) {
     console.error("Authentication error:", err);
@@ -62,13 +44,13 @@ app.get("/events", authenticateUser, async (req, res) => {
   try {
     console.log("Fetching events for user:", req.userId);
 
-    // Get all events for the user (using internal user ID, not Firebase UID)
+    // Get all events for the user
     const eventsResult = await pool.query(
       `SELECT id, name, date, image_url, description, location, created_at
        FROM events 
        WHERE user_id = $1 
        ORDER BY date DESC`,
-      [req.userId] // This should be the internal user ID
+      [req.userId]
     );
 
     console.log(`Found ${eventsResult.rows.length} events`);
@@ -79,7 +61,7 @@ app.get("/events", authenticateUser, async (req, res) => {
 
     if (eventIds.length > 0) {
       const recipesResult = await pool.query(
-        `SELECT event_id, id, meal_id, title, image, ingredients, instructions, custom, category, area, tags, youtube_url, source_url
+        `SELECT event_id, id, meal_id, title, image, ingredients, instructions, custom
          FROM recipes 
          WHERE event_id = ANY($1::int[])
          ORDER BY id DESC`,
@@ -98,14 +80,11 @@ app.get("/events", authenticateUser, async (req, res) => {
         idMeal: recipe.meal_id,
         strMeal: recipe.title,
         strMealThumb: recipe.image,
-        strCategory: recipe.category || "Unknown",
-        strArea: recipe.area || "Unknown",
+        strCategory: "Unknown",
+        strArea: "Unknown",
         strIngredients: recipe.ingredients,
         strInstructions: recipe.instructions,
         custom: recipe.custom,
-        tags: recipe.tags,
-        youtube_url: recipe.youtube_url,
-        source_url: recipe.source_url,
       });
       return acc;
     }, {});
@@ -148,7 +127,6 @@ app.post("/events", authenticateUser, async (req, res) => {
       return res.status(400).json({ error: "Name and date are required" });
     }
 
-    // Use internal user ID instead of Firebase UID
     const result = await pool.query(
       `INSERT INTO events (user_id, name, date, description, location, image_url, created_at) 
        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP) 
@@ -187,7 +165,6 @@ app.put("/events/:id", authenticateUser, async (req, res) => {
   const { id } = req.params;
 
   try {
-    // Use internal user ID instead of Firebase UID
     const result = await pool.query(
       `UPDATE events 
        SET name = $1, date = $2, description = $3, location = $4
@@ -224,7 +201,6 @@ app.delete("/events/:id", authenticateUser, async (req, res) => {
   const { id } = req.params;
 
   try {
-    // Use internal user ID instead of Firebase UID
     const result = await pool.query(
       "DELETE FROM events WHERE id = $1 AND user_id = $2 RETURNING id",
       [id, req.userId]
@@ -276,7 +252,7 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
         .json({ error: "Event not found or access denied" });
     }
 
-    // Check if recipe already exists for this event (unique constraint on event_id, meal_id)
+    // Check if recipe already exists for this event
     const existing = await pool.query(
       "SELECT id FROM recipes WHERE event_id = $1 AND meal_id = $2",
       [id, recipe.idMeal]
@@ -301,27 +277,20 @@ app.post("/events/:id/recipes", authenticateUser, async (req, res) => {
     }
     const ingredientsText = ingredients.join(", ");
 
-    // Insert recipe with properly formatted data - use internal user ID
+    // Insert recipe with properly formatted data
     const insertResult = await pool.query(
-      `INSERT INTO recipes (
-        user_id, event_id, meal_id, title, image, ingredients, instructions, 
-        custom, category, area, tags, youtube_url, source_url
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) 
-      RETURNING *`,
+      `INSERT INTO recipes (event_id, user_id, meal_id, title, image, ingredients, instructions, custom) 
+   VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
+   RETURNING *`,
       [
-        req.userId, // Use internal user ID
         id,
+        req.userId,
         recipe.idMeal,
         recipe.strMeal,
         recipe.strMealThumb || "",
         ingredientsText,
         recipe.strInstructions || "",
-        false, // This is from TheMealDB, not custom
-        recipe.strCategory || null,
-        recipe.strArea || null,
-        recipe.strTags || null,
-        recipe.strYoutube || null,
-        recipe.strSource || null,
+        false,
       ]
     );
 
@@ -373,12 +342,12 @@ app.delete(
     const { id, mealId } = req.params;
 
     try {
-      // Use internal user ID for security
+      // Updated to include user_id in the deletion for security
       const result = await pool.query(
         `DELETE FROM recipes 
        WHERE event_id = $1 AND meal_id = $2 AND user_id = $3
        RETURNING id`,
-        [id, mealId, req.userId]
+        [id, mealId, req.userId] // Added req.userId
       );
 
       if (result.rows.length === 0) {
@@ -399,10 +368,9 @@ app.delete(
   }
 );
 
-// Helper function to get event with recipes
+// Helper function to get event with recipes - ADD THIS HERE
 async function getEventWithRecipes(eventId, userId) {
   try {
-    // Use internal user ID
     const eventResult = await pool.query(
       `SELECT id, name, date, image_url, description, location, created_at
        FROM events 
@@ -416,13 +384,13 @@ async function getEventWithRecipes(eventId, userId) {
 
     const event = eventResult.rows[0];
 
-    // Use internal user ID for extra security
+    // Updated to include user_id filter for extra security
     const recipesResult = await pool.query(
-      `SELECT id, meal_id, title, image, ingredients, instructions, custom, category, area, tags, youtube_url, source_url
+      `SELECT id, meal_id, title, image, ingredients, instructions, custom
        FROM recipes 
        WHERE event_id = $1 AND user_id = $2
        ORDER BY id DESC`,
-      [eventId, userId]
+      [eventId, userId] // Added userId parameter
     );
 
     const recipes = recipesResult.rows.map((recipe) => ({
@@ -430,14 +398,11 @@ async function getEventWithRecipes(eventId, userId) {
       idMeal: recipe.meal_id,
       strMeal: recipe.title,
       strMealThumb: recipe.image,
-      strCategory: recipe.category || "Unknown",
-      strArea: recipe.area || "Unknown",
+      strCategory: "Unknown",
+      strArea: "Unknown",
       strIngredients: recipe.ingredients,
       strInstructions: recipe.instructions,
       custom: recipe.custom,
-      tags: recipe.tags,
-      youtube_url: recipe.youtube_url,
-      source_url: recipe.source_url,
     }));
 
     return {
